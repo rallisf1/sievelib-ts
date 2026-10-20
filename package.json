@@ -1,6 +1,6 @@
 {
   "name": "sievelib-ts",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Sieve parser, filter builder, and ManageSieve client for Node.js",
   "license": "MIT",
   "repository": {"type": "git", "url": "git+https://github.com/rallisf1/sievelib-ts.git"},

@@ -1,0 +1,68 @@
+import net from 'node:net';
+import tls from 'node:tls';
+
+declare const SUPPORTED_AUTH_MECHS: readonly ["PLAIN", "LOGIN", "OAUTHBEARER", "XOAUTH2"];
+declare class Error extends globalThis.Error {
+}
+declare class Response extends globalThis.Error {
+    code: string;
+    data: string;
+    constructor(code: string, data: string);
+}
+type Socket = net.Socket | tls.TLSSocket;
+/** Async RFC 5804 client. All network operations return promises. */
+declare class Client {
+    srvaddr: string;
+    srvport: number;
+    srvhostname: string;
+    debug: boolean;
+    static readTimeout: number;
+    socket?: Socket;
+    authenticated: boolean;
+    errcode: string;
+    errmsg: string;
+    private chunks;
+    private available;
+    private ended?;
+    private wake?;
+    private capabilitiesMap;
+    constructor(srvaddr: string, srvport?: number, srvhostname?: string, debug?: boolean);
+    private log;
+    private finish;
+    private attach;
+    private waitForData;
+    private readBytes;
+    private readLine;
+    private open;
+    private upgradeTls;
+    private write;
+    private static encodeArgument;
+    private readLiteral;
+    private parseError;
+    private readResponse;
+    private send;
+    private getCapabilities;
+    getImplementation(): string | undefined;
+    getSaslMechanisms(): string[];
+    hasTlsSupport(): boolean;
+    getSieveCapabilities(): string[];
+    get_implementation(): string | undefined;
+    get_sasl_mechanisms(): string[];
+    has_tls_support(): boolean;
+    get_sieve_capabilities(): string[];
+    connect(login: string, password: string, authzId?: string, starttls?: boolean, ssl?: boolean, authmech?: string): Promise<boolean>;
+    private requireAuthentication;
+    private literal;
+    logout(): Promise<boolean>;
+    capability(): Promise<string | null>;
+    havespace(name: string, size: number): Promise<boolean>;
+    listscripts(): Promise<[string | undefined, string[]] | null>;
+    getscript(name: string): Promise<string | null>;
+    putscript(name: string, content: string): Promise<boolean>;
+    deletescript(name: string): Promise<boolean>;
+    setactive(name: string): Promise<boolean>;
+    checkscript(content: string): Promise<boolean>;
+    renamescript(oldname: string, newname: string): Promise<boolean>;
+}
+
+export { Client, Error, Response, SUPPORTED_AUTH_MECHS };

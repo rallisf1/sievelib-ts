@@ -15,8 +15,10 @@ Python [`sievelib`](https://github.com/tonioo/sievelib) source at commit
 npm install sievelib-ts
 ```
 
-The package supports Node.js 20 or later and provides both ESM and CommonJS
-exports.
+The package supports Node.js 20 or later, with both ESM and CommonJS exports.
+It can also run under Bun 1.4 or later. Bun uses its native TCP transport for
+plain ManageSieve and STARTTLS connections; Bun 1.3 and older are not supported
+for STARTTLS because of an upstream TLS certificate-verification defect.
 
 ```js
 // ESM

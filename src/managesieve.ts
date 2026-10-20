@@ -1,14 +1,133 @@
 import net from "node:net";
 import tls from "node:tls";
+import { EventEmitter } from "node:events";
 import { quote } from "./tools.js";
 
 export const SUPPORTED_AUTH_MECHS = ["PLAIN", "LOGIN", "OAUTHBEARER", "XOAUTH2"] as const;
 export class Error extends globalThis.Error {}
 export class Response extends globalThis.Error { constructor(public code: string, public data: string) { super(`${code} ${data}`); } }
 
-type Socket = net.Socket | tls.TLSSocket;
+interface BunNativeSocket {
+  write(data: Uint8Array): number;
+  end(): void;
+  close(): void;
+  timeout(seconds: number): void;
+  upgradeTLS(options: { socket: BunSocketHandler; tls: { serverName: string; rejectUnauthorized: true } }): [BunNativeSocket, BunNativeSocket];
+}
+
+interface BunSocketHandler {
+  data(socket: BunNativeSocket, data: Uint8Array): void;
+  end(socket: BunNativeSocket): void;
+  close(socket: BunNativeSocket, error?: globalThis.Error): void;
+  error(socket: BunNativeSocket, error: globalThis.Error): void;
+  timeout(socket: BunNativeSocket): void;
+}
+
+interface BunRuntime {
+  version?: string;
+  connect(options: {
+    hostname: string;
+    port: number;
+    tls?: boolean | { serverName: string; rejectUnauthorized: true };
+    socket: BunSocketHandler;
+  }): Promise<BunNativeSocket>;
+}
+
+type Socket = net.Socket | tls.TLSSocket | BunSocket;
 type Reply = { code: string; data: string; body: Buffer };
 const CRLF = Buffer.from("\r\n");
+
+/**
+ * Adapts Bun's native TCP API to the small Node socket surface used by Client.
+ * Bun's native upgradeTLS avoids the incompatible node:tls wrapping path.
+ */
+class BunSocket extends EventEmitter {
+  private native?: BunNativeSocket;
+  private buffered: Buffer[] = [];
+  private timeout?: ReturnType<typeof setTimeout>;
+  private timeoutHandler?: () => void;
+  private terminalError?: globalThis.Error;
+
+  constructor() { super(); }
+
+  private handler(): BunSocketHandler {
+    return {
+      data: (_socket, data) => {
+        const chunk = Buffer.from(data);
+        this.resetTimeout();
+        if (this.listenerCount("data")) this.emit("data", chunk); else this.buffered.push(chunk);
+      },
+      end: () => this.emit("end"),
+      close: (_socket, error) => {
+        if (error) this.emitError(error);
+        this.emit("close");
+      },
+      error: (_socket, error) => this.emitError(error),
+      timeout: () => this.timeoutHandler?.(),
+    };
+  }
+
+  static async connect(runtime: BunRuntime, hostname: string, port: number, servername: string, tls: boolean) {
+    const socket = new BunSocket();
+    socket.native = await runtime.connect({ hostname, port, tls: tls ? { serverName: servername, rejectUnauthorized: true } : false, socket: socket.handler() });
+    return socket;
+  }
+
+  activate() {
+    for (const chunk of this.buffered.splice(0)) this.emit("data", chunk);
+    if (this.terminalError) this.emitError(this.terminalError);
+  }
+
+  write(data: Uint8Array, callback?: (error?: globalThis.Error | null) => void) {
+    this.resetTimeout();
+    const written = this.native?.write(data) ?? -1;
+    const error = written < 0 ? new Error("Connection closed by server") : undefined;
+    queueMicrotask(() => callback?.(error));
+    return written >= 0;
+  }
+
+  end() { this.clearTimeout(); this.native?.end(); }
+  destroy(error?: globalThis.Error) { this.clearTimeout(); this.native?.close(); if (error) this.emitError(error); }
+  setTimeout(milliseconds: number, callback: () => void) {
+    this.timeoutHandler = callback;
+    this.resetTimeout(milliseconds);
+    return this;
+  }
+
+  upgradeTls(servername: string) {
+    if (!this.native) throw new Error("Not connected");
+    this.clearTimeout();
+    // The raw handle is detached by Bun during the upgrade. Its later close
+    // notification must not be interpreted as the upgraded TLS connection
+    // closing.
+    this.removeAllListeners();
+    const upgraded = new BunSocket();
+    const [, secure] = this.native.upgradeTLS({ socket: upgraded.handler(), tls: { serverName: servername, rejectUnauthorized: true } });
+    upgraded.native = secure;
+    return upgraded;
+  }
+
+  private resetTimeout(milliseconds?: number) {
+    if (!this.timeoutHandler) return;
+    this.clearTimeout();
+    this.timeout = setTimeout(() => this.timeoutHandler?.(), milliseconds ?? Client.readTimeout);
+  }
+  private clearTimeout() { if (this.timeout) clearTimeout(this.timeout); this.timeout = undefined; }
+  private emitError(error: globalThis.Error) {
+    this.terminalError ??= error;
+    if (this.listenerCount("error")) this.emit("error", error);
+  }
+}
+
+function bunRuntime(): BunRuntime | undefined {
+  const candidate = (globalThis as typeof globalThis & { Bun?: Partial<BunRuntime> }).Bun;
+  return typeof candidate?.connect === "function" ? candidate as BunRuntime : undefined;
+}
+
+function supportsSecureBunTlsUpgrade(runtime: BunRuntime) {
+  const match = /^(\d+)\.(\d+)/.exec(runtime.version ?? "");
+  return !!match && (Number(match[1]) > 1 || (Number(match[1]) === 1 && Number(match[2]) >= 4));
+}
 
 /** Async RFC 5804 client. All network operations return promises. */
 export class Client {
@@ -29,11 +148,13 @@ export class Client {
 
   private attach(socket: Socket) {
     this.chunks = []; this.available = 0; this.ended = undefined;
-    socket.on("data", (chunk: Buffer) => { this.log(chunk); this.chunks.push(Buffer.from(chunk)); this.available += chunk.length; this.wake?.(); this.wake = undefined; });
-    socket.once("end", () => this.finish(new Error("Connection closed by server")));
-    socket.once("close", () => this.finish(new Error("Connection closed by server")));
-    socket.once("error", (error) => this.finish(error));
+    const events = socket as unknown as EventEmitter;
+    events.on("data", (chunk: Buffer) => { this.log(chunk); this.chunks.push(Buffer.from(chunk)); this.available += chunk.length; this.wake?.(); this.wake = undefined; });
+    events.once("end", () => this.finish(new Error("Connection closed by server")));
+    events.once("close", () => this.finish(new Error("Connection closed by server")));
+    events.once("error", (error: globalThis.Error) => this.finish(error));
     socket.setTimeout(Client.readTimeout, () => socket.destroy(new Error("Failed to read data from server")));
+    if (socket instanceof BunSocket) socket.activate();
   }
   private async waitForData() {
     if (this.available) return;
@@ -59,12 +180,30 @@ export class Client {
     }
   }
   private async open(implicitTls: boolean) {
+    const bun = bunRuntime();
+    // Bun's native plain TCP implementation avoids the node:net compatibility
+    // layer. TLS sockets continue to use node:tls unless a STARTTLS upgrade is
+    // needed below.
+    if (bun && !implicitTls) {
+      this.socket = await BunSocket.connect(bun, this.srvaddr, this.srvport, this.srvhostname, implicitTls);
+      this.attach(this.socket);
+      return;
+    }
     const socket: Socket = implicitTls ? tls.connect({ host: this.srvaddr, port: this.srvport, servername: this.srvhostname }) : net.connect({ host: this.srvaddr, port: this.srvport });
     await new Promise<void>((resolve, reject) => { socket.once(implicitTls ? "secureConnect" : "connect", resolve); socket.once("error", reject); });
     this.socket = socket; this.attach(socket);
   }
   private async upgradeTls() {
     if (!this.socket) throw new Error("Not connected");
+    if (this.socket instanceof BunSocket) {
+      const bun = bunRuntime();
+      if (!bun || !supportsSecureBunTlsUpgrade(bun)) {
+        throw new Error("Bun 1.4.0 or later is required for secure ManageSieve STARTTLS connections");
+      }
+      this.socket = this.socket.upgradeTls(this.srvhostname);
+      this.attach(this.socket);
+      return;
+    }
     const socket = tls.connect({ socket: this.socket as net.Socket, servername: this.srvhostname });
     await new Promise<void>((resolve, reject) => { socket.once("secureConnect", resolve); socket.once("error", reject); });
     this.socket = socket; this.attach(socket);

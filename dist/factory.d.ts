@@ -38,7 +38,7 @@ declare class FiltersSet {
     disablefilter(name: string): boolean;
     movefilter(name: string, direction: "up" | "down"): boolean;
     fromParserResult(parser: Parser): void;
-    get_filter_matchtype(name: string): "allof" | "anyof" | null;
+    get_filter_matchtype(name: string): "anyof" | "allof" | null;
     private conditionTuple;
     get_filter_conditions(name: string): unknown[][] | null;
     get_filter_actions(name: string): unknown[][] | null;

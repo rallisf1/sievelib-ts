@@ -48,4 +48,5 @@ describe("ManageSieve safety", () => {
     internal.chunks = [listing]; internal.available = listing.length;
     expect((await internal.readResponse()).body.toString()).toBe('clever"script\r\n"main" ACTIVE\r\n');
   });
+
 });

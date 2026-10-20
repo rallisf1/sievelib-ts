@@ -1,5 +1,6 @@
 import net from 'node:net';
 import tls from 'node:tls';
+import { EventEmitter } from 'node:events';
 
 declare const SUPPORTED_AUTH_MECHS: readonly ["PLAIN", "LOGIN", "OAUTHBEARER", "XOAUTH2"];
 declare class Error extends globalThis.Error {
@@ -9,7 +10,62 @@ declare class Response extends globalThis.Error {
     data: string;
     constructor(code: string, data: string);
 }
-type Socket = net.Socket | tls.TLSSocket;
+interface BunNativeSocket {
+    write(data: Uint8Array): number;
+    end(): void;
+    close(): void;
+    timeout(seconds: number): void;
+    upgradeTLS(options: {
+        socket: BunSocketHandler;
+        tls: {
+            serverName: string;
+            rejectUnauthorized: true;
+        };
+    }): [BunNativeSocket, BunNativeSocket];
+}
+interface BunSocketHandler {
+    data(socket: BunNativeSocket, data: Uint8Array): void;
+    end(socket: BunNativeSocket): void;
+    close(socket: BunNativeSocket, error?: globalThis.Error): void;
+    error(socket: BunNativeSocket, error: globalThis.Error): void;
+    timeout(socket: BunNativeSocket): void;
+}
+interface BunRuntime {
+    version?: string;
+    connect(options: {
+        hostname: string;
+        port: number;
+        tls?: boolean | {
+            serverName: string;
+            rejectUnauthorized: true;
+        };
+        socket: BunSocketHandler;
+    }): Promise<BunNativeSocket>;
+}
+type Socket = net.Socket | tls.TLSSocket | BunSocket;
+/**
+ * Adapts Bun's native TCP API to the small Node socket surface used by Client.
+ * Bun's native upgradeTLS avoids the incompatible node:tls wrapping path.
+ */
+declare class BunSocket extends EventEmitter {
+    private native?;
+    private buffered;
+    private timeout?;
+    private timeoutHandler?;
+    private terminalError?;
+    constructor();
+    private handler;
+    static connect(runtime: BunRuntime, hostname: string, port: number, servername: string, tls: boolean): Promise<BunSocket>;
+    activate(): void;
+    write(data: Uint8Array, callback?: (error?: globalThis.Error | null) => void): boolean;
+    end(): void;
+    destroy(error?: globalThis.Error): void;
+    setTimeout(milliseconds: number, callback: () => void): this;
+    upgradeTls(servername: string): BunSocket;
+    private resetTimeout;
+    private clearTimeout;
+    private emitError;
+}
 /** Async RFC 5804 client. All network operations return promises. */
 declare class Client {
     srvaddr: string;

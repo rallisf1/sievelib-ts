@@ -5,3 +5,4 @@ export { Client, Error, Response, SUPPORTED_AUTH_MECHS } from './managesieve.js'
 export { isQuoted, quote, unquote, unquoteArg } from './tools.js';
 import 'node:net';
 import 'node:tls';
+import 'node:events';
